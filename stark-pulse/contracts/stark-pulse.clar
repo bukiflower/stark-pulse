@@ -1,4 +1,4 @@
-;; StarkPulse Cross-Dimensional NFT Gaming Ecosystem Protocol
+;; Simplified StarkPulse Gaming Protocol
 
 ;; Error Constants
 (define-constant ERR-NOT-AUTHORIZED (err u1000))
@@ -6,38 +6,26 @@
 (define-constant ERR-INVALID-AMOUNT (err u1002))
 (define-constant ERR-PROTOCOL-PAUSED (err u1003))
 (define-constant ERR-INSUFFICIENT-RESONANCE (err u1004))
-(define-constant ERR-INVALID-PULSE-SCORE (err u1005))
-(define-constant ERR-DIMENSIONAL-INSTABILITY-HIGH (err u1006))
-(define-constant ERR-TEMPORAL-LOCK-ACTIVE (err u1007))
-(define-constant ERR-INVALID-REALM-ID (err u1008))
-(define-constant ERR-USER-NOT-FOUND (err u1009))
-(define-constant ERR-TIMELOCK-ACTIVE (err u1010))
-(define-constant ERR-INVALID-COUNCIL-PROPOSAL (err u1011))
-(define-constant ERR-INVALID-CRAFTING-RECIPE (err u1012))
+(define-constant ERR-USER-NOT-FOUND (err u1005))
+(define-constant ERR-INVALID-REALM-ID (err u1006))
+(define-constant ERR-REALM-NOT-FOUND (err u1007))
+(define-constant ERR-NOT-REALM-OWNER (err u1008))
+(define-constant ERR-DIVISION-BY-ZERO (err u1009))
 
 ;; Protocol Constants
 (define-constant CONTRACT-OWNER tx-sender)
 (define-constant MIN-RESONANCE-RATIO u150) ;; 150%
 (define-constant MAX-PULSE-SCORE u1000)
-(define-constant INSTABILITY-THRESHOLD u500) ;; 5%
-(define-constant TEMPORAL-LOCK-THRESHOLD u2000) ;; 20%
-(define-constant TIMELOCK-PERIOD u1440) ;; 24 hours in blocks
-(define-constant MIN-REALM-DEPOSIT u1000) ;; Minimum realm deposit
+(define-constant MIN-REALM-DEPOSIT u1000)
+(define-constant INITIAL-TOKEN-SUPPLY u1000000)
 
 ;; Data Variables
 (define-data-var protocol-paused bool false)
 (define-data-var total-pulse-supply uint u0)
-(define-data-var total-resonance-supply uint u0)
-(define-data-var total-essence-supply uint u0)
-(define-data-var current-instability uint u0)
-(define-data-var temporal-mode bool false)
-(define-data-var temporal-lock-active bool false)
-(define-data-var last-dimensional-check uint u0)
+(define-data-var total-resonance-supply uint INITIAL-TOKEN-SUPPLY)
+(define-data-var total-essence-supply uint INITIAL-TOKEN-SUPPLY)
 (define-data-var base-resonance-ratio uint u150)
-(define-data-var emergency-admin (optional principal) none)
-(define-data-var council-timelock uint u0)
 (define-data-var next-realm-id uint u1)
-(define-data-var next-proposal-id uint u1)
 
 ;; Data Maps
 (define-map player-pulse-scores principal uint)
@@ -47,7 +35,6 @@
 (define-map player-exploration-history principal 
   {
     total-explored: uint, 
-    exploration-duration: uint, 
     last-exploration-block: uint
   })
 (define-map player-resonance-positions principal 
@@ -60,116 +47,66 @@
   {
     owner: principal, 
     balance: uint, 
-    recipe: (string-ascii 50), 
-    last-rebalance: uint, 
-    craft-rate: uint,
     created-at: uint
   })
 (define-map realm-counter principal uint)
-(define-map dimensional-instability-data uint 
-  {
-    instability-score: uint, 
-    timestamp: uint, 
-    dimensional-cap: uint
-  })
-(define-map council-proposals uint 
-  {
-    proposer: principal, 
-    description: (string-ascii 500), 
-    votes-for: uint, 
-    votes-against: uint, 
-    executed: bool,
-    created-at: uint,
-    voting-deadline: uint
-  })
-(define-map player-council-power principal uint)
-(define-map valid-recipes (string-ascii 50) bool)
 
 ;; Authorization Functions
 (define-private (is-contract-owner)
   (is-eq tx-sender CONTRACT-OWNER))
 
-(define-private (is-emergency-admin)
-  (match (var-get emergency-admin)
-    admin (is-eq tx-sender admin)
-    false))
-
-(define-private (is-authorized-admin)
-  (or (is-contract-owner) (is-emergency-admin)))
-
 ;; Input Validation Functions
 (define-private (validate-amount (amount uint))
   (> amount u0))
 
-(define-private (validate-principal (player principal))
-  (not (is-eq player CONTRACT-OWNER)))
-
 (define-private (check-protocol-status)
-  (and 
-    (not (var-get protocol-paused)) 
-    (not (var-get temporal-lock-active))))
+  (not (var-get protocol-paused)))
 
-(define-private (is-valid-recipe (recipe (string-ascii 50)))
-  (default-to false (map-get? valid-recipes recipe)))
+(define-private (realm-exists (realm-id uint))
+  (is-some (map-get? dimensional-realms realm-id)))
 
-;; Helper function to get minimum of two values
+(define-private (is-realm-owner (realm-id uint) (player principal))
+  (match (map-get? dimensional-realms realm-id)
+    realm (is-eq (get owner realm) player)
+    false))
+
+;; Helper functions
 (define-private (min-uint (a uint) (b uint))
   (if (<= a b) a b))
 
-;; Pulse Score Calculation
+(define-private (max-uint (a uint) (b uint))
+  (if (>= a b) a b))
+
+;; Pulse Score Calculation (simplified)
 (define-private (calculate-pulse-score (player principal))
   (let (
     (exploration-data (default-to 
-      {total-explored: u0, exploration-duration: u0, last-exploration-block: u0} 
+      {total-explored: u0, last-exploration-block: u0} 
       (map-get? player-exploration-history player)))
-    (council-power (default-to u0 (map-get? player-council-power player)))
     (base-score u100)
     (exploration-bonus (/ (get total-explored exploration-data) u1000))
-    (duration-bonus (/ (get exploration-duration exploration-data) u100))
-    (council-bonus (/ council-power u10))
-    (total-score (+ base-score exploration-bonus duration-bonus council-bonus))
+    (total-score (+ base-score exploration-bonus))
   )
   (min-uint total-score MAX-PULSE-SCORE)))
 
-;; Dimensional Instability Analysis
-(define-private (analyze-dimensional-instability)
-  (let (
-    (current-block block-height)
-    (last-check (var-get last-dimensional-check))
-    (instability-increase (> (- current-block last-check) u100))
-  )
-  (if instability-increase
-    (let (
-      (new-instability (+ (var-get current-instability) u50))
-    )
-    (var-set current-instability new-instability)
-    (var-set last-dimensional-check current-block)
-    (if (> new-instability TEMPORAL-LOCK-THRESHOLD)
-      (var-set temporal-lock-active true)
-      true))
-    true)))
-
-;; Dynamic Resonance Ratio Calculation
-(define-private (calculate-dynamic-resonance-ratio (player principal))
-  (let (
-    (pulse-score (calculate-pulse-score player))
-    (base-ratio (var-get base-resonance-ratio))
-    (instability (var-get current-instability))
-    (score-adjustment (/ (* pulse-score u50) MAX-PULSE-SCORE))
-    (instability-adjustment (/ instability u10))
-  )
-  (+ (- base-ratio score-adjustment) instability-adjustment)))
-
-;; Admin Functions
-(define-public (set-emergency-admin (new-admin principal))
+;; Initial Token Distribution
+(define-public (initialize-player-tokens (player principal) (resonance-amount uint) (essence-amount uint))
   (begin
     (asserts! (is-contract-owner) ERR-NOT-AUTHORIZED)
-    (var-set emergency-admin (some new-admin))
+    (asserts! (validate-amount resonance-amount) ERR-INVALID-AMOUNT)
+    (asserts! (validate-amount essence-amount) ERR-INVALID-AMOUNT)
+    
+    (map-set player-balances-resonance player 
+             (+ (default-to u0 (map-get? player-balances-resonance player)) resonance-amount))
+    (map-set player-balances-essence player 
+             (+ (default-to u0 (map-get? player-balances-essence player)) essence-amount))
+    
     (ok true)))
 
+;; Admin Functions
 (define-public (pause-protocol)
   (begin
-    (asserts! (is-authorized-admin) ERR-NOT-AUTHORIZED)
+    (asserts! (is-contract-owner) ERR-NOT-AUTHORIZED)
     (var-set protocol-paused true)
     (ok true)))
 
@@ -177,61 +114,50 @@
   (begin
     (asserts! (is-contract-owner) ERR-NOT-AUTHORIZED)
     (var-set protocol-paused false)
-    (var-set temporal-lock-active false)
     (ok true)))
 
 (define-public (update-base-resonance-ratio (new-ratio uint))
   (begin
     (asserts! (is-contract-owner) ERR-NOT-AUTHORIZED)
     (asserts! (>= new-ratio u100) ERR-INVALID-AMOUNT)
-    (asserts! (is-eq (var-get council-timelock) u0) ERR-TIMELOCK-ACTIVE)
     (var-set base-resonance-ratio new-ratio)
-    (ok true)))
-
-(define-public (activate-temporal-lock)
-  (begin
-    (asserts! (is-authorized-admin) ERR-NOT-AUTHORIZED)
-    (var-set temporal-lock-active true)
-    (var-set protocol-paused true)
-    (ok true)))
-
-(define-public (add-recipe (recipe (string-ascii 50)))
-  (begin
-    (asserts! (is-contract-owner) ERR-NOT-AUTHORIZED)
-    (map-set valid-recipes recipe true)
-    (ok true)))
-
-(define-public (remove-recipe (recipe (string-ascii 50)))
-  (begin
-    (asserts! (is-contract-owner) ERR-NOT-AUTHORIZED)
-    (map-delete valid-recipes recipe)
     (ok true)))
 
 ;; Core Protocol Functions
 (define-public (mint-pulse (resonance-amount uint))
   (let (
     (player tx-sender)
-    (pulse-score (calculate-pulse-score player))
-    (required-ratio (calculate-dynamic-resonance-ratio player))
-    (mint-amount (/ (* resonance-amount u100) required-ratio))
+    (required-ratio (var-get base-resonance-ratio))
+    (player-resonance-balance (default-to u0 (map-get? player-balances-resonance player)))
   )
   (asserts! (check-protocol-status) ERR-PROTOCOL-PAUSED)
   (asserts! (validate-amount resonance-amount) ERR-INVALID-AMOUNT)
+  (asserts! (>= player-resonance-balance resonance-amount) ERR-INSUFFICIENT-BALANCE)
+  (asserts! (> required-ratio u0) ERR-DIVISION-BY-ZERO)
+  
+  (let (
+    (mint-amount (/ (* resonance-amount u100) required-ratio))
+  )
   (asserts! (>= resonance-amount (* mint-amount required-ratio)) ERR-INSUFFICIENT-RESONANCE)
   
-  (analyze-dimensional-instability)
+  ;; Deduct resonance from player
+  (map-set player-balances-resonance player (- player-resonance-balance resonance-amount))
   
+  ;; Add pulse to player
   (map-set player-balances-pulse player 
            (+ (default-to u0 (map-get? player-balances-pulse player)) mint-amount))
+  
+  ;; Record position
   (map-set player-resonance-positions player 
            {
              resonance-amount: resonance-amount, 
              debt-amount: mint-amount, 
              resonance-ratio: required-ratio
            })
+  
   (var-set total-pulse-supply (+ (var-get total-pulse-supply) mint-amount))
   
-  (ok mint-amount)))
+  (ok mint-amount))))
 
 (define-public (redeem-pulse (pulse-amount uint))
   (let (
@@ -246,20 +172,36 @@
   
   (let (
     (position-data (unwrap! position ERR-USER-NOT-FOUND))
-    (resonance-to-return (/ (* pulse-amount (get resonance-amount position-data)) 
-                            (get debt-amount position-data)))
+    (debt-amount (get debt-amount position-data))
+  )
+  (asserts! (> debt-amount u0) ERR-DIVISION-BY-ZERO)
+  
+  (let (
+    (resonance-to-return (/ (* pulse-amount (get resonance-amount position-data)) debt-amount))
   )
   (map-set player-balances-pulse player (- player-balance pulse-amount))
+  (map-set player-balances-resonance player 
+           (+ (default-to u0 (map-get? player-balances-resonance player)) resonance-to-return))
   (var-set total-pulse-supply (- (var-get total-pulse-supply) pulse-amount))
   
-  (ok resonance-to-return))))
+  ;; Update position
+  (if (is-eq pulse-amount debt-amount)
+    (map-delete player-resonance-positions player)
+    (map-set player-resonance-positions player
+             {
+               resonance-amount: (- (get resonance-amount position-data) resonance-to-return),
+               debt-amount: (- debt-amount pulse-amount),
+               resonance-ratio: (get resonance-ratio position-data)
+             }))
+  
+  (ok resonance-to-return)))))
 
 (define-public (explore-resonance (amount uint))
   (let (
     (player tx-sender)
     (current-balance (default-to u0 (map-get? player-balances-resonance player)))
     (current-exploration (default-to 
-      {total-explored: u0, exploration-duration: u0, last-exploration-block: u0} 
+      {total-explored: u0, last-exploration-block: u0} 
       (map-get? player-exploration-history player)))
   )
   (asserts! (check-protocol-status) ERR-PROTOCOL-PAUSED)
@@ -270,7 +212,6 @@
   (map-set player-exploration-history player 
            {
              total-explored: (+ (get total-explored current-exploration) amount),
-             exploration-duration: (+ (get exploration-duration current-exploration) u1),
              last-exploration-block: block-height
            })
   
@@ -299,7 +240,6 @@
   (map-set player-exploration-history player 
            {
              total-explored: (- total-explored amount),
-             exploration-duration: (get exploration-duration exploration-info),
              last-exploration-block: block-height
            })
   
@@ -308,7 +248,8 @@
   
   (ok true))))
 
-(define-public (create-dimensional-realm (initial-deposit uint) (recipe (string-ascii 50)))
+;; Simplified Realm Functions
+(define-public (create-dimensional-realm (initial-deposit uint))
   (let (
     (player tx-sender)
     (realm-id (var-get next-realm-id))
@@ -318,7 +259,6 @@
   (asserts! (validate-amount initial-deposit) ERR-INVALID-AMOUNT)
   (asserts! (>= initial-deposit MIN-REALM-DEPOSIT) ERR-INVALID-AMOUNT)
   (asserts! (>= player-balance initial-deposit) ERR-INSUFFICIENT-BALANCE)
-  (asserts! (is-valid-recipe recipe) ERR-INVALID-CRAFTING-RECIPE)
   
   ;; Deduct balance and create realm
   (map-set player-balances-pulse player (- player-balance initial-deposit))
@@ -326,9 +266,6 @@
            {
              owner: player,
              balance: initial-deposit,
-             recipe: recipe,
-             last-rebalance: block-height,
-             craft-rate: u0,
              created-at: block-height
            })
   
@@ -341,4 +278,157 @@
   
   (ok realm-id)))
 
-(define-public (deposit-to-realm
+(define-public (deposit-to-realm (realm-id uint) (amount uint))
+  (let (
+    (player tx-sender)
+    (realm-data (map-get? dimensional-realms realm-id))
+    (player-balance (default-to u0 (map-get? player-balances-pulse player)))
+  )
+  (asserts! (check-protocol-status) ERR-PROTOCOL-PAUSED)
+  (asserts! (validate-amount amount) ERR-INVALID-AMOUNT)
+  (asserts! (>= player-balance amount) ERR-INSUFFICIENT-BALANCE)
+  (asserts! (is-some realm-data) ERR-REALM-NOT-FOUND)
+  (asserts! (is-realm-owner realm-id player) ERR-NOT-REALM-OWNER)
+  
+  (let (
+    (realm-info (unwrap! realm-data ERR-REALM-NOT-FOUND))
+  )
+  ;; Deduct from player balance
+  (map-set player-balances-pulse player (- player-balance amount))
+  
+  ;; Add to realm balance
+  (map-set dimensional-realms realm-id
+           {
+             owner: (get owner realm-info),
+             balance: (+ (get balance realm-info) amount),
+             created-at: (get created-at realm-info)
+           })
+  
+  (ok true))))
+
+(define-public (withdraw-from-realm (realm-id uint) (amount uint))
+  (let (
+    (player tx-sender)
+    (realm-data (map-get? dimensional-realms realm-id))
+  )
+  (asserts! (check-protocol-status) ERR-PROTOCOL-PAUSED)
+  (asserts! (validate-amount amount) ERR-INVALID-AMOUNT)
+  (asserts! (is-some realm-data) ERR-REALM-NOT-FOUND)
+  (asserts! (is-realm-owner realm-id player) ERR-NOT-REALM-OWNER)
+  
+  (let (
+    (realm-info (unwrap! realm-data ERR-REALM-NOT-FOUND))
+    (realm-balance (get balance realm-info))
+  )
+  (asserts! (>= realm-balance amount) ERR-INSUFFICIENT-BALANCE)
+  
+  ;; Update realm balance
+  (map-set dimensional-realms realm-id
+           {
+             owner: (get owner realm-info),
+             balance: (- realm-balance amount),
+             created-at: (get created-at realm-info)
+           })
+  
+  ;; Add to player balance
+  (map-set player-balances-pulse player 
+           (+ (default-to u0 (map-get? player-balances-pulse player)) amount))
+  
+  (ok true))))
+
+(define-public (craft-in-realm (realm-id uint) (essence-amount uint))
+  (let (
+    (player tx-sender)
+    (realm-data (map-get? dimensional-realms realm-id))
+    (player-essence-balance (default-to u0 (map-get? player-balances-essence player)))
+  )
+  (asserts! (check-protocol-status) ERR-PROTOCOL-PAUSED)
+  (asserts! (validate-amount essence-amount) ERR-INVALID-AMOUNT)
+  (asserts! (>= player-essence-balance essence-amount) ERR-INSUFFICIENT-BALANCE)
+  (asserts! (is-some realm-data) ERR-REALM-NOT-FOUND)
+  (asserts! (is-realm-owner realm-id player) ERR-NOT-REALM-OWNER)
+  
+  (let (
+    (realm-info (unwrap! realm-data ERR-REALM-NOT-FOUND))
+    (craft-rate (max-uint u1 (/ (get balance realm-info) u1000)))
+    (crafted-amount (/ (* essence-amount craft-rate) u100))
+  )
+  ;; Consume essence
+  (map-set player-balances-essence player (- player-essence-balance essence-amount))
+  
+  ;; Award pulse based on craft rate
+  (map-set player-balances-pulse player 
+           (+ (default-to u0 (map-get? player-balances-pulse player)) crafted-amount))
+  
+  (var-set total-pulse-supply (+ (var-get total-pulse-supply) crafted-amount))
+  
+  (ok crafted-amount))))
+
+;; Read-only Functions
+(define-read-only (get-player-balances (player principal))
+  {
+    pulse: (default-to u0 (map-get? player-balances-pulse player)),
+    resonance: (default-to u0 (map-get? player-balances-resonance player)),
+    essence: (default-to u0 (map-get? player-balances-essence player))
+  })
+
+(define-read-only (get-player-pulse-score (player principal))
+  (calculate-pulse-score player))
+
+(define-read-only (get-player-exploration-data (player principal))
+  (default-to 
+    {total-explored: u0, last-exploration-block: u0} 
+    (map-get? player-exploration-history player)))
+
+(define-read-only (get-player-resonance-position (player principal))
+  (map-get? player-resonance-positions player))
+
+(define-read-only (get-realm-info (realm-id uint))
+  (map-get? dimensional-realms realm-id))
+
+(define-read-only (get-player-realm-count (player principal))
+  (default-to u0 (map-get? realm-counter player)))
+
+(define-read-only (get-protocol-stats)
+  {
+    total-pulse-supply: (var-get total-pulse-supply),
+    total-resonance-supply: (var-get total-resonance-supply),
+    total-essence-supply: (var-get total-essence-supply),
+    protocol-paused: (var-get protocol-paused),
+    base-resonance-ratio: (var-get base-resonance-ratio),
+    next-realm-id: (var-get next-realm-id)
+  })
+
+(define-read-only (estimate-mint-amount (resonance-amount uint))
+  (let (
+    (required-ratio (var-get base-resonance-ratio))
+  )
+  (if (> required-ratio u0)
+    (ok (/ (* resonance-amount u100) required-ratio))
+    ERR-DIVISION-BY-ZERO)))
+
+(define-read-only (estimate-redeem-amount (player principal) (pulse-amount uint))
+  (let (
+    (position (map-get? player-resonance-positions player))
+  )
+  (match position
+    pos (let (
+          (debt-amount (get debt-amount pos))
+        )
+        (if (> debt-amount u0)
+          (ok (/ (* pulse-amount (get resonance-amount pos)) debt-amount))
+          ERR-DIVISION-BY-ZERO))
+    ERR-USER-NOT-FOUND)))
+
+(define-read-only (get-realm-craft-rate (realm-id uint))
+  (match (map-get? dimensional-realms realm-id)
+    realm (ok (max-uint u1 (/ (get balance realm) u1000)))
+    ERR-REALM-NOT-FOUND))
+
+(define-read-only (estimate-craft-output (realm-id uint) (essence-amount uint))
+  (match (map-get? dimensional-realms realm-id)
+    realm (let (
+            (craft-rate (max-uint u1 (/ (get balance realm) u1000)))
+          )
+          (ok (/ (* essence-amount craft-rate) u100)))
+    ERR-REALM-NOT-FOUND))
