@@ -1,0 +1,3 @@
+# StarkPulse
+
+StarkPulse is a cross-dimensional NFT gaming ecosystem built on StarkNet that revolutionizes blockchain gaming through dynamic asset evolution and temporal mechanics. Players explore interconnected dimensional realms where NFT assets physically transform based on cross-dimensional exposure, utilizing a Temporal Crafting System where recipes change based on real-world time cycles and network conditions. The platform features innovative community governance through Dimensional Council roles and a play-to-earn economy powered by Pulse Tokens earned through exploration, crafting, and maintaining dimensional stability.
